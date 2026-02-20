@@ -7,91 +7,73 @@ on:
         description: 'Senha de execução'
         required: true
         type: string
-      action:
-        description: 'Ação a executar'
-        required: true
-        default: 'run'
-        type: choice
-        options:
-          - run
-          - test
 
 env:
   WORK_DIR: /home/runner/work/msfarm
 
 jobs:
-  validate:
-    runs-on: ubuntu-latest
-    outputs:
-      valid: ${{ steps.check.outputs.valid }}
-    steps:
-      - name: Validar senha
-        id: check
-        run: |
-          if [ "${{ github.event.inputs.password }}" = "${{ secrets.PASS }}" ]; then
-            echo "valid=true" >> $GITHUB_OUTPUT
-            echo "✅ Senha válida!"
-          else
-            echo "valid=false" >> $GITHUB_OUTPUT
-            echo "❌ Senha incorreta!"
-            exit 1
-          fi
-
-  setup-and-run:
-    needs: validate
-    if: needs.validate.outputs.valid == 'true'
+  run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: 📦 Checkout do repositório
-        uses: actions/checkout@v4
+      - name: 🔐 Validar senha
+        run: |
+          if [ "${{ github.event.inputs.password }}" != "${{ secrets.PASS }}" ]; then
+            echo "❌ Senha incorreta!"
+            exit 1
+          fi
+          echo "✅ Senha válida!"
 
-      - name: 🐍 Configurar Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: 📥 Baixar arquivos do repositório msfarm
+      - name: 📥 Baixar arquivos msfarm
         env:
           GH_TOKEN: ${{ secrets.GH_API_TOKEN }}
         run: |
           mkdir -p ${{ env.WORK_DIR }}/pkl
           cd ${{ env.WORK_DIR }}
           
-          echo "📥 Baixando arquivos da pasta msfarm..."
+          echo "📥 Baixando arquivos..."
           
-          # Baixar lista de arquivos
-          curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/Alisson990jd/apiss/contents/msfarm?ref=main" | \
-            jq -r '.[] | select(.type=="file") | "\(.name) \(.download_url)"' | \
-            while read name url; do
-              echo "  📄 $name"
-              curl -sL -H "Authorization: token $GH_TOKEN" "$url" -o "$name"
-            done
+          # Baixar arquivos principais
+          FILES="start_env.py yt.py extension.zip emails.txt emails_usage.json"
+          for file in $FILES; do
+            echo "  → $file"
+            curl -sL -H "Authorization: token $GH_TOKEN" \
+              "https://raw.githubusercontent.com/Alisson990jd/apiss/main/msfarm/$file" \
+              -o "$file" 2>/dev/null || echo "    (não encontrado)"
+          done
           
-          # Baixar pasta pkl
-          PKL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/Alisson990jd/apiss/contents/msfarm/pkl?ref=main")
+          # Baixar PKLs
+          echo "📥 Baixando PKLs..."
+          PKL_LIST=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/Alisson990jd/apiss/contents/msfarm/pkl?ref=main" 2>/dev/null)
           
-          if [ "$PKL_STATUS" = "200" ]; then
-            echo "📥 Baixando pasta pkl..."
-            curl -s -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/Alisson990jd/apiss/contents/msfarm/pkl?ref=main" | \
-              jq -r '.[] | select(.type=="file") | "\(.name) \(.download_url)"' | \
-              while read name url; do
-                echo "  📄 pkl/$name"
-                curl -sL -H "Authorization: token $GH_TOKEN" "$url" -o "pkl/$name"
-              done
-          fi
+          echo "$PKL_LIST" | jq -r '.[]? | select(.type=="file") | .name' 2>/dev/null | while read name; do
+            if [ -n "$name" ]; then
+              echo "  → pkl/$name"
+              curl -sL -H "Authorization: token $GH_TOKEN" \
+                "https://raw.githubusercontent.com/Alisson990jd/apiss/main/msfarm/pkl/$name" \
+                -o "pkl/$name"
+            fi
+          done
           
-          echo "✅ Download concluído!"
+          echo ""
+          echo "📁 Arquivos baixados:"
           ls -la
+          echo ""
+          echo "📁 PKLs:"
+          ls -la pkl/ 2>/dev/null || echo "(vazio)"
+
+      - name: 🐍 Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: 📦 Instalar dependências
         run: |
           pip install --upgrade pip
-          pip install discord.py aiohttp playwright playwright-stealth
+          pip install discord.py aiohttp
+          pip install playwright playwright-stealth
           pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
           playwright install chromium
           playwright install-deps chromium
@@ -100,43 +82,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb x11-utils
-
-      - name: 🔧 Modificar start.py para usar secrets
-        run: |
-          cd ${{ env.WORK_DIR }}
-          
-          # Usar sed para substituir as linhas hardcoded
-          sed -i 's/DISCORD_TOKEN = ".*"/DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")/' start.py
-          sed -i 's/CHANNEL_ID = [0-9]*/CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0"))/' start.py
-          sed -i 's/GITHUB_TOKEN = ".*"/GITHUB_TOKEN = os.environ.get("GH_API_TOKEN")/' start.py
-          
-          # Adicionar validação após os imports
-          sed -i '/^GITHUB_PATH = /a\
-          \
-          # Validar variáveis obrigatórias\
-          if not DISCORD_TOKEN:\
-              print("❌ ERRO: DISCORD_TOKEN não definido!")\
-              sys.exit(1)\
-          if not CHANNEL_ID:\
-              print("❌ ERRO: DISCORD_CHANNEL_ID não definido!")\
-              sys.exit(1)\
-          if not GITHUB_TOKEN:\
-              print("❌ ERRO: GH_API_TOKEN não definido!")\
-              sys.exit(1)' start.py
-          
-          echo "✅ start.py modificado!"
-          
-          # Verificar modificações
-          head -50 start.py
-
-      - name: 📋 Verificar arquivos
-        run: |
-          cd ${{ env.WORK_DIR }}
-          echo "📁 Arquivos:"
-          ls -la
-          echo ""
-          echo "📁 PKL:"
-          ls -la pkl/ 2>/dev/null || echo "Pasta pkl vazia"
 
       - name: 🚀 Executar Bot
         env:
@@ -147,9 +92,16 @@ jobs:
         run: |
           cd ${{ env.WORK_DIR }}
           
+          # Verificar arquivo
+          if [ ! -f "start_env.py" ]; then
+            echo "❌ start_env.py não encontrado!"
+            exit 1
+          fi
+          
           # Iniciar Xvfb
+          echo "🖥️ Iniciando Xvfb..."
           Xvfb :99 -screen 0 1920x1080x24 &
           sleep 3
           
           echo "🚀 Iniciando bot..."
-          python3 start.py
+          python3 start_env.py
