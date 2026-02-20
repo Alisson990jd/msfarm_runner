@@ -1,0 +1,51 @@
+name: MSFarm Daily Runner
+
+on:
+  schedule:
+    # 10:00 UTC = 07:00 AM in Brazil (BRT, UTC-3)
+    - cron: '0 10 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-farm:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Clone apiss msfarm repo
+        run: |
+          git clone https://github.com/Alisson990jd/apiss.git
+          cp -r apiss/msfarm .
+          rm -rf apiss
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          cd msfarm
+          python -m pip install --upgrade pip
+          pip install discord.py aiohttp playwright playwright-stealth google-api-python-client
+          playwright install chromium
+
+      - name: Decrypt PKL files
+        env:
+          ZIP_PASSWORD: ${{ secrets.ZIP_PASSWORD }}
+        run: |
+          cd msfarm
+          openssl enc -aes-256-cbc -d -salt -pbkdf2 -in secure_pkl.tar.gz.enc -pass pass:$ZIP_PASSWORD | tar -xzf -
+
+      - name: Run script with Xvfb
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          GH_API_TOKEN: ${{ secrets.GH_API_TOKEN }}
+        run: |
+          cd msfarm
+          sudo apt-get install -y xvfb
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 2
+          
+          python start.py --cron
