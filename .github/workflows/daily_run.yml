@@ -29,20 +29,92 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 📦 Dependências
+      - name: 🖥️ Instalar dependências do sistema
         run: |
-          pip install discord.py aiohttp playwright playwright-stealth
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb \
+            x11-utils \
+            xauth \
+            dbus-x11 \
+            libx11-xcb1 \
+            libxcomposite1 \
+            libxcursor1 \
+            libxdamage1 \
+            libxi6 \
+            libxtst6 \
+            libxrandr2 \
+            libasound2 \
+            libatk1.0-0 \
+            libatk-bridge2.0-0 \
+            libcups2 \
+            libdrm2 \
+            libgbm1 \
+            libgtk-3-0 \
+            libnspr4 \
+            libnss3 \
+            libpango-1.0-0 \
+            libpangocairo-1.0-0 \
+            libxshmfence1 \
+            libglu1-mesa \
+            libxkbcommon0 \
+            libxkbcommon-x11-0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-xfixes0 \
+            libxcb-xinerama0 \
+            fonts-liberation \
+            fonts-noto-color-emoji \
+            fonts-freefont-ttf
+
+      - name: 📦 Instalar dependências Python
+        run: |
+          pip install --upgrade pip
+          pip install discord.py aiohttp
+          pip install playwright playwright-stealth
           pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
-          playwright install chromium && playwright install-deps chromium
-          sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: 🎭 Instalar Playwright
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: 📋 Verificar estrutura
+        run: |
+          echo "📁 Arquivos:"
+          ls -la
+          echo ""
+          echo "📁 msfarm/:"
+          ls -la msfarm/ 2>/dev/null || echo "N/A"
+          echo ""
+          echo "📁 pkl/:"
+          ls -la msfarm/pkl/ 2>/dev/null || ls -la pkl/ 2>/dev/null || echo "N/A"
 
       - name: 🚀 Executar
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           GH_API_TOKEN: ${{ secrets.GH_API_TOKEN }}
-          DISPLAY: ":99"
         run: |
-          Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
-          sleep 2
+          # Iniciar Xvfb com configuração completa
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
+          XVFB_PID=$!
+          sleep 3
+          
+          # Verificar se Xvfb está rodando
+          if ! kill -0 $XVFB_PID 2>/dev/null; then
+            echo "❌ Xvfb falhou ao iniciar!"
+            exit 1
+          fi
+          echo "✅ Xvfb rodando (PID: $XVFB_PID)"
+          
+          # Iniciar dbus
+          eval $(dbus-launch --sh-syntax)
+          
+          # Executar bot
           python3 start.py
