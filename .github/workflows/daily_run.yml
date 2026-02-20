@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       password:
-        description: 'Senha de execução'
+        description: 'Senha'
         required: true
         type: string
 
@@ -23,85 +23,242 @@ jobs:
             echo "❌ Senha incorreta!"
             exit 1
           fi
-          echo "✅ Senha válida!"
 
-      - name: 📥 Baixar arquivos msfarm
+      - name: 📥 Baixar arquivos
         env:
           GH_TOKEN: ${{ secrets.GH_API_TOKEN }}
         run: |
           mkdir -p ${{ env.WORK_DIR }}/pkl
           cd ${{ env.WORK_DIR }}
           
-          echo "📥 Baixando arquivos..."
-          
-          # Baixar arquivos principais
-          FILES="start_env.py yt.py extension.zip emails.txt emails_usage.json"
-          for file in $FILES; do
-            echo "  → $file"
+          for f in yt.py extension.zip emails.txt emails_usage.json; do
             curl -sL -H "Authorization: token $GH_TOKEN" \
-              "https://raw.githubusercontent.com/Alisson990jd/apiss/main/msfarm/$file" \
-              -o "$file" 2>/dev/null || echo "    (não encontrado)"
+              "https://raw.githubusercontent.com/Alisson990jd/apiss/main/msfarm/$f" -o "$f" 2>/dev/null || true
           done
           
-          # Baixar PKLs
-          echo "📥 Baixando PKLs..."
-          PKL_LIST=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/Alisson990jd/apiss/contents/msfarm/pkl?ref=main" 2>/dev/null)
+          curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/Alisson990jd/apiss/contents/msfarm/pkl?ref=main" | \
+            jq -r '.[]? | .name' 2>/dev/null | while read n; do
+              [ -n "$n" ] && curl -sL -H "Authorization: token $GH_TOKEN" \
+                "https://raw.githubusercontent.com/Alisson990jd/apiss/main/msfarm/pkl/$n" -o "pkl/$n"
+            done
           
-          echo "$PKL_LIST" | jq -r '.[]? | select(.type=="file") | .name' 2>/dev/null | while read name; do
-            if [ -n "$name" ]; then
-              echo "  → pkl/$name"
-              curl -sL -H "Authorization: token $GH_TOKEN" \
-                "https://raw.githubusercontent.com/Alisson990jd/apiss/main/msfarm/pkl/$name" \
-                -o "pkl/$name"
-            fi
-          done
-          
-          echo ""
-          echo "📁 Arquivos baixados:"
           ls -la
-          echo ""
-          echo "📁 PKLs:"
-          ls -la pkl/ 2>/dev/null || echo "(vazio)"
 
-      - name: 🐍 Configurar Python
+      - name: 📝 Criar start_env.py
+        run: |
+          cd ${{ env.WORK_DIR }}
+          curl -sL "https://gist.githubusercontent.com/raw/start_env.py" -o start_env.py || \
+          cat > start_env.py << 'ENDSCRIPT'
+          #!/usr/bin/env python3
+          import discord
+          from discord.ext import commands, tasks
+          import asyncio, aiohttp, json, os, base64, logging, signal, sys
+          from datetime import datetime, timedelta
+          
+          DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
+          CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID") or "0")
+          GITHUB_TOKEN = os.environ.get("GH_API_TOKEN")
+          GITHUB_REPO = "Alisson990jd/apiss"
+          GITHUB_BRANCH = "main"
+          GITHUB_PATH = "msfarm"
+          
+          if not DISCORD_TOKEN: print("❌ DISCORD_TOKEN!"); sys.exit(1)
+          if not CHANNEL_ID: print("❌ CHANNEL_ID!"); sys.exit(1)
+          if not GITHUB_TOKEN: print("❌ GH_TOKEN!"); sys.exit(1)
+          
+          MAX_CONCURRENT = 4
+          SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+          YT_SCRIPT = os.path.join(SCRIPT_DIR, "yt.py")
+          
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
+          logger = logging.getLogger(__name__)
+          
+          class GH:
+              def __init__(s,t,r,b,p):
+                  s.t,s.r,s.b,s.p=t,r,b,p
+                  s.url=f"https://api.github.com/repos/{r}/contents/{p}"
+                  s.h={"Authorization":f"token {t}","Accept":"application/vnd.github.v3+json"}
+              async def get(s,f):
+                  async with aiohttp.ClientSession() as ss:
+                      async with ss.get(f"{s.url}/{f}?ref={s.b}",headers=s.h) as r:
+                          if r.status==200:d=await r.json();return base64.b64decode(d['content']).decode(),d['sha']
+                          return None,None
+              async def put(s,f,c,sha=None):
+                  if not sha:_,sha=await s.get(f)
+                  p={"message":"upd","content":base64.b64encode(c.encode()).decode(),"branch":s.b}
+                  if sha:p["sha"]=sha
+                  async with aiohttp.ClientSession() as ss:
+                      async with ss.put(f"{s.url}/{f}",headers=s.h,json=p) as r:
+                          if r.status in[200,201]:return(await r.json())['content']['sha']
+                          raise Exception(r.status)
+          
+          class EM:
+              def __init__(s,g):s.g,s.e,s.u,s.es,s.us,s.l=g,[],{},None,None,asyncio.Lock()
+              async def sync(s):
+                  async with s.l:
+                      c,sha=await s.g.get("emails.txt")
+                      if c:s.e,s.es=[x.strip()for x in c.split('\n')if x.strip()],sha
+                      c,sha=await s.g.get("emails_usage.json")
+                      if c:s.u,s.us=json.loads(c),sha
+                      logger.info(f"Sync:{len(s.e)}")
+                      return True
+              async def save(s,ue=True,uu=True):
+                  async with s.l:
+                      if ue:s.es=await s.g.put("emails.txt",'\n'.join(s.e),s.es)
+                      if uu:s.us=await s.g.put("emails_usage.json",json.dumps(s.u,indent=2),s.us)
+              async def add(s,e):
+                  async with s.l:
+                      if e not in s.e:s.e.append(e);return True
+                      return False
+              async def rm(s,e):
+                  async with s.l:
+                      if e in s.e:s.e.remove(e);return True
+                      return False
+              async def mark(s,e,ok=True,err=None):
+                  async with s.l:
+                      t=datetime.now().strftime('%Y-%m-%d')
+                      if e not in s.u:s.u[e]={"executions":[],"total_success":0,"total_failed":0}
+                      s.u[e]["executions"].append({"date":t,"time":datetime.now().strftime('%H:%M:%S'),"success":ok,"error":err})
+                      s.u[e]["total_success"if ok else"total_failed"]+=1
+                      s.u[e]["executions"]=s.u[e]["executions"][-30:]
+              def pending(s):
+                  t=datetime.now().strftime('%Y-%m-%d')
+                  return[e for e in s.e if not any(x.get("date")==t and x.get("success")for x in s.u.get(e,{}).get("executions",[]))]
+          
+          class EX:
+              def __init__(s,em,bot):s.em,s.bot,s.sem,s.run,s.act,s.dc,s.dl=em,bot,asyncio.Semaphore(MAX_CONCURRENT),False,{},0,asyncio.Lock()
+              async def disp(s):
+                  async with s.dl:s.dc+=1;return s.dc+99
+              async def exec(s,e,d):
+                  st=datetime.now()
+                  try:
+                      await s.msg(f"🔄 `{e}` :{d}")
+                      cmd=f"export DISPLAY=:{d}&&Xvfb :{d} -screen 0 1920x1080x24>/dev/null 2>&1&sleep 2&&cd {SCRIPT_DIR}&&python3 {YT_SCRIPT} -email {e}"
+                      p=await asyncio.create_subprocess_shell(cmd,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+                      _,se=await p.communicate()
+                      dur=f"{int((datetime.now()-st).total_seconds()//60)}m"
+                      if p.returncode==0:await s.em.mark(e,True);await s.em.save(False,True);await s.msg(f"✅ `{e}` {dur}");return True
+                      er=se.decode()[-200:]if se else"err"
+                      await s.em.mark(e,False,er);await s.em.save(False,True);await s.msg(f"❌ `{e}`\n```{er[:150]}```");return False
+                  except Exception as x:await s.em.mark(e,False,str(x));await s.msg(f"❌ `{e}` {x}");return False
+              async def work(s,e):
+                  async with s.sem:
+                      d=await s.disp()
+                      try:await s.exec(e,d)
+                      finally:s.act.pop(e,None)
+              async def batch(s):
+                  await s.em.sync()
+                  p=s.em.pending()
+                  if not p:await s.msg("ℹ️ Nada");return
+                  await s.msg(f"🚀 {len(p)}")
+                  s.run,s.dc=True,0
+                  ts=[asyncio.create_task(s.work(e))for e in p]
+                  for e,t in zip(p,ts):s.act[e]=t
+                  await asyncio.gather(*ts,return_exceptions=True)
+                  s.run=False
+                  ok=sum(1 for e in p if s.em.u.get(e,{}).get("executions",[{}])[-1].get("success"))
+                  await s.msg(f"🏁 {ok}/{len(p)}")
+              async def msg(s,m):
+                  try:
+                      ch=s.bot.get_channel(CHANNEL_ID)
+                      if ch:await ch.send(m)
+                  except:pass
+          
+          intents=discord.Intents.default();intents.message_content=True
+          bot=commands.Bot(command_prefix='!',intents=intents)
+          gh=em=ex=None
+          
+          @bot.event
+          async def on_ready():
+              global gh,em,ex
+              logger.info(f"Bot:{bot.user}")
+              gh=GH(GITHUB_TOKEN,GITHUB_REPO,GITHUB_BRANCH,GITHUB_PATH)
+              em=EM(gh);ex=EX(em,bot)
+              await em.sync()
+              ch=bot.get_channel(CHANNEL_ID)
+              if ch:await ch.send(embed=discord.Embed(title="🧠 Online",color=0x00ff00).add_field(name="📧",value=str(len(em.e))))
+              daily.start()
+          
+          @bot.command(name='add')
+          async def ca(c,e:str):
+              if c.channel.id!=CHANNEL_ID or'@'not in e:return
+              if await em.add(e):await em.save(True,False);await c.send(f"✅`{e}`")
+              else:await c.send("⚠️")
+          @bot.command(name='remove')
+          async def cr(c,e:str):
+              if c.channel.id!=CHANNEL_ID:return
+              if await em.rm(e):await em.save(True,False);await c.send("✅")
+              else:await c.send("⚠️")
+          @bot.command(name='list')
+          async def cl(c):
+              if c.channel.id!=CHANNEL_ID:return
+              await c.send(embed=discord.Embed(title="📧",description="\n".join(f"`{e}`"for e in em.e)[:4000]))
+          @bot.command(name='status')
+          async def cs(c):
+              if c.channel.id!=CHANNEL_ID:return
+              await c.send(embed=discord.Embed(title="📊").add_field(name="T",value=len(em.e)).add_field(name="P",value=len(em.pending())).add_field(name="A",value=len(ex.act)))
+          @bot.command(name='pending')
+          async def cp(c):
+              if c.channel.id!=CHANNEL_ID:return
+              p=em.pending()
+              await c.send("✅"if not p else embed:=discord.Embed(title="⏳",description="\n".join(f"`{e}`"for e in p[:50])[:4000]))
+          @bot.command(name='run')
+          async def crun(c):
+              if c.channel.id!=CHANNEL_ID:return
+              if ex.run:await c.send("⚠️");return
+              await c.send("🚀");asyncio.create_task(ex.batch())
+          @bot.command(name='sync')
+          async def csync(c):
+              if c.channel.id!=CHANNEL_ID:return
+              await c.send("🔄");await em.sync();await c.send(f"✅{len(em.e)}")
+          @bot.command(name='stop')
+          async def cstop(c):
+              if c.channel.id!=CHANNEL_ID:return
+              for t in ex.act.values():t.cancel()
+              ex.run=False;await c.send("🛑")
+          
+          @tasks.loop(hours=24)
+          async def daily():
+              await asyncio.sleep(5)
+              now=datetime.now();target=now.replace(hour=7,minute=0,second=0)
+              if now>target:target+=timedelta(days=1)
+              await asyncio.sleep((target-now).total_seconds())
+              ch=bot.get_channel(CHANNEL_ID)
+              if ch:await ch.send("⏰")
+              await ex.batch()
+          @daily.before_loop
+          async def bd():await bot.wait_until_ready()
+          
+          if __name__=="__main__":
+              signal.signal(signal.SIGINT,lambda s,f:sys.exit(0))
+              logger.info(f"CH:{CHANNEL_ID}")
+              bot.run(DISCORD_TOKEN)
+          ENDSCRIPT
+          
+          echo "✅ start_env.py criado"
+          head -20 start_env.py
+
+      - name: 🐍 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 📦 Instalar dependências
+      - name: 📦 Dependências
         run: |
-          pip install --upgrade pip
-          pip install discord.py aiohttp
-          pip install playwright playwright-stealth
+          pip install discord.py aiohttp playwright playwright-stealth
           pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
-          playwright install chromium
-          playwright install-deps chromium
+          playwright install chromium && playwright install-deps chromium
+          sudo apt-get update && sudo apt-get install -y xvfb
 
-      - name: 🖥️ Instalar Xvfb
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb x11-utils
-
-      - name: 🚀 Executar Bot
+      - name: 🚀 Executar
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           GH_API_TOKEN: ${{ secrets.GH_API_TOKEN }}
           DISPLAY: ":99"
         run: |
+          Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
+          sleep 2
           cd ${{ env.WORK_DIR }}
-          
-          # Verificar arquivo
-          if [ ! -f "start_env.py" ]; then
-            echo "❌ start_env.py não encontrado!"
-            exit 1
-          fi
-          
-          # Iniciar Xvfb
-          echo "🖥️ Iniciando Xvfb..."
-          Xvfb :99 -screen 0 1920x1080x24 &
-          sleep 3
-          
-          echo "🚀 Iniciando bot..."
           python3 start_env.py
