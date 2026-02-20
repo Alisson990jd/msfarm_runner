@@ -9,7 +9,8 @@ on:
 jobs:
   run-farm:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 350
+
     steps:
       - name: Verify Password
         env:
@@ -34,30 +35,40 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
+            libpango-1.0-0 libcairo2 libasound2 libxshmfence1
+
+      - name: Install Python dependencies
         run: |
           cd msfarm
           python -m pip install --upgrade pip
           pip install discord.py aiohttp playwright playwright-stealth google-api-python-client
-          playwright install chromium
+          playwright install chrome
+          playwright install-deps chrome
 
       - name: Decrypt PKL files
         env:
           ZIP_PASSWORD: ${{ secrets.ZIP_PASSWORD }}
         run: |
           cd msfarm
-          openssl enc -aes-256-cbc -d -salt -pbkdf2 -in secure_pkl.tar.gz.enc -pass pass:$ZIP_PASSWORD | tar -xzf -
+          openssl enc -aes-256-cbc -d -salt -pbkdf2 -in secure_pkl.tar.gz.enc -out pkl_decrypted.tar.gz -pass pass:$ZIP_PASSWORD
+          tar -xzf pkl_decrypted.tar.gz
+          rm pkl_decrypted.tar.gz
+          echo "✅ PKL files decrypted:"
+          ls -la pkl/
 
-      - name: Run script with Xvfb
+      - name: Run MSFarm
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           GH_API_TOKEN: ${{ secrets.GH_API_TOKEN }}
+          DISPLAY: ':99'
         run: |
-          cd msfarm
-          sudo apt-get install -y xvfb
-          export DISPLAY=:99
-          Xvfb :99 -screen 0 1920x1080x24 &
+          Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
           sleep 2
-          
+          cd msfarm
           python start.py --cron
