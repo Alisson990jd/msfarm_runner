@@ -11,11 +11,21 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+      - name: Verify Password
+        env:
+          PASS: ${{ secrets.PASS }}
+        run: |
+          if [ -z "$PASS" ]; then
+            echo "❌ PASS secret not configured!"
+            exit 1
+          fi
+          echo "✅ Password verified"
+
       - name: Clone apiss msfarm repo
         env:
           GH_API_TOKEN: ${{ secrets.GH_API_TOKEN }}
         run: |
-          git clone https://$GH_API_TOKEN@github.com/Alisson990jd/apiss.git
+          git clone https://${GH_API_TOKEN}@github.com/Alisson990jd/apiss.git
           cp -r apiss/msfarm .
           rm -rf apiss
 
@@ -33,10 +43,10 @@ jobs:
 
       - name: Decrypt PKL files
         env:
-          PASS: ${{ secrets.PASS }}
+          ZIP_PASSWORD: ${{ secrets.ZIP_PASSWORD }}
         run: |
           cd msfarm
-          openssl enc -aes-256-cbc -d -salt -pbkdf2 -in secure_pkl.tar.gz.enc -pass pass:$PASS | tar -xzf -
+          openssl enc -aes-256-cbc -d -salt -pbkdf2 -in secure_pkl.tar.gz.enc -pass pass:$ZIP_PASSWORD | tar -xzf -
 
       - name: Run script with Xvfb
         env:
