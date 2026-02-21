@@ -32,6 +32,7 @@ jobs:
       - name: 🖥️ Instalar dependências do sistema
         run: |
           sudo apt-get update
+          sudo apt install -y xfce4
           sudo apt-get install -y \
             xvfb \
             x11-utils \
