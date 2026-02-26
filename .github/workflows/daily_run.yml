@@ -1,121 +1,87 @@
-name: Microsoft Rewards Bot
+name: Windows RDP via Ngrok
 
 on:
   workflow_dispatch:
-    inputs:
-      password:
-        description: 'Senha'
-        required: true
-        type: string
 
 jobs:
-  run-bot:
-    runs-on: ubuntu-latest
+  windows-rdp:
+    runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
-      - name: 🔐 Validar senha
+      # ── 1. Criar senha e habilitar o RDP ──────────────────────────
+      - name: Habilitar RDP e definir credenciais
         run: |
-          if [ "${{ github.event.inputs.password }}" != "${{ secrets.PASS }}" ]; then
-            echo "❌ Senha incorreta!"
-            exit 1
-          fi
+          # Define senha para o usuário padrão do runner
+          Set-LocalUser -Name "runneradmin" `
+            -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!123" -Force)
 
-      - name: 📦 Checkout
-        uses: actions/checkout@v4
+          # Habilita conexões de Área de Trabalho Remota
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" -Value 0
 
-      - name: 🐍 Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+          # Libera firewall para RDP
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-      - name: 🖥️ Instalar dependências do sistema
+          # Habilita autenticação NLA
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" -Value 1
+
+          Write-Host "✅ RDP habilitado com sucesso"
+
+      # ── 2. Baixar e configurar o Ngrok ─────────────────────────────
+      - name: Instalar Ngrok
         run: |
-          sudo apt-get update
-          sudo apt install -y xfce4
-          sudo apt-get install -y xkb-data x11-xkb-utils
-          sudo apt-get install -y \
-            xvfb \
-            x11-utils \
-            xauth \
-            dbus-x11 \
-            libx11-xcb1 \
-            libxcomposite1 \
-            libxcursor1 \
-            libxdamage1 \
-            libxi6 \
-            libxtst6 \
-            libxrandr2 \
-            libatk1.0-0 \
-            libatk-bridge2.0-0 \
-            libcups2 \
-            libdrm2 \
-            libgbm1 \
-            libgtk-3-0 \
-            libnspr4 \
-            libnss3 \
-            libpango-1.0-0 \
-            libpangocairo-1.0-0 \
-            libxshmfence1 \
-            libglu1-mesa \
-            libxkbcommon0 \
-            libxkbcommon-x11-0 \
-            libxcb-icccm4 \
-            libxcb-image0 \
-            libxcb-keysyms1 \
-            libxcb-randr0 \
-            libxcb-render-util0 \
-            libxcb-shape0 \
-            libxcb-xfixes0 \
-            libxcb-xinerama0 \
-            fonts-liberation \
-            fonts-noto-color-emoji \
-            fonts-freefont-ttf
+          Invoke-WebRequest `
+            -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" `
+            -OutFile ngrok.zip
+          Expand-Archive ngrok.zip -DestinationPath "$env:USERPROFILE\ngrok"
+          Write-Host "✅ Ngrok instalado"
 
-      - name: 📦 Instalar dependências Python
+      - name: Autenticar Ngrok
         run: |
-          pip install --upgrade pip
-          pip install discord.py aiohttp
-          pip install playwright playwright-stealth
-          pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
+          & "$env:USERPROFILE\ngrok\ngrok.exe" config add-authtoken 1vgZrCA9yJDURy3OK1gNbS2G610_3CX2e2bqT4Ee88uMBk5he
 
-      - name: 🎭 Instalar Playwright
+      # ── 3. Iniciar túnel TCP na porta 3389 (RDP) ──────────────────
+      - name: Iniciar túnel Ngrok
         run: |
-          playwright install chromium
-          playwright install-deps chromium
+          Start-Process -FilePath "$env:USERPROFILE\ngrok\ngrok.exe" `
+            -ArgumentList "tcp 3389" -WindowStyle Hidden
 
-      - name: 📋 Verificar estrutura
-        run: |
-          echo "📁 Arquivos:"
-          ls -la
-          echo ""
-          echo "📁 msfarm/:"
-          ls -la msfarm/ 2>/dev/null || echo "N/A"
-          echo ""
-          echo "📁 pkl/:"
-          ls -la msfarm/pkl/ 2>/dev/null || ls -la pkl/ 2>/dev/null || echo "N/A"
+          # Aguarda o túnel subir
+          Start-Sleep -Seconds 10
 
-      - name: 🚀 Executar
-        env:
-          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
-          GH_API_TOKEN: ${{ secrets.GH_API_TOKEN }}
+          # Consulta a API local do Ngrok para obter o endereço público
+          $tunnels = (Invoke-RestMethod http://127.0.0.1:4040/api/tunnels).tunnels
+          $publicUrl = $tunnels[0].public_url
+
+          Write-Host ""
+          Write-Host "==========================================="
+          Write-Host "  🖥️  CONEXÃO RDP PRONTA"
+          Write-Host "==========================================="
+          Write-Host "  Endereço : $publicUrl"
+          Write-Host "  Usuário  : runneradmin"
+          Write-Host "  Senha    : P@ssw0rd!123"
+          Write-Host "==========================================="
+          Write-Host ""
+          Write-Host "Abra o 'Conexão de Área de Trabalho Remota'"
+          Write-Host "e cole o endereço acima (sem tcp://)."
+          Write-Host ""
+
+      # ── 4. Manter a sessão viva ────────────────────────────────────
+      - name: Manter sessão ativa (max 6h)
         run: |
-          # Iniciar Xvfb com configuração completa
-          export DISPLAY=:99
-          Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
-          XVFB_PID=$!
-          sleep 3
-          
-          # Verificar se Xvfb está rodando
-          if ! kill -0 $XVFB_PID 2>/dev/null; then
-            echo "❌ Xvfb falhou ao iniciar!"
-            exit 1
-          fi
-          echo "✅ Xvfb rodando (PID: $XVFB_PID)"
-          
-          # Iniciar dbus
-          eval $(dbus-launch --sh-syntax)
-          
-          # Executar bot
-          python3 start.py
+          $start = Get-Date
+          while ((Get-Date) -lt $start.AddHours(6)) {
+            # Re-exibe o endereço a cada 5 min (útil se precisar rolar o log)
+            try {
+              $tunnels = (Invoke-RestMethod http://127.0.0.1:4040/api/tunnels).tunnels
+              $url = $tunnels[0].public_url
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Sessão ativa — RDP em: $url"
+            } catch {
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Sessão ativa..."
+            }
+            Start-Sleep -Seconds 300
+          }
